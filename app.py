@@ -7,218 +7,291 @@ st.set_page_config(
     page_title="Hệ Thống Đăng Ký Đề Tài & GVHD", page_icon="🎓", layout="centered"
 )
 
-# Khai báo file
 FILE_HV = "DS HV AI.xlsx"
 FILE_DE_TAI_CHUNG = "LIST_De_tai_Chung.xlsx"
 FILE_DE_TAI_LUAT = "LIST_De_tai_Luat_ok.xlsx"
 FILE_GV = "DS GVHD& ListEmail.xlsx"
-FILE_MAU_DK = "DS Mau Dang ky.xlsx"
 FILE_KET_QUA = "DS_Dang_Ky_Thanh_Cong.xlsx"
 
 
+# Hàm đọc file Excel thông minh: Tự động bỏ qua các dòng tiêu đề to của trường
+def doc_excel_thong_minh(file_path, tu_khoa_nhan_dien):
+    for skip in range(10):  # Quét từ dòng 0 đến dòng 9
+        try:
+            df = pd.read_excel(file_path, header=skip)
+            cols_str = " ".join([str(c).lower() for c in df.columns])
+            if any(tk.lower() in cols_str for tk in tu_khoa_nhan_dien):
+                return df
+        except Exception:
+            continue
+    return pd.read_excel(file_path)
+
+
+# Hàm tìm cột linh hoạt
+def tim_cot(df, keywords):
+    for col in df.columns:
+        col_clean = str(col).strip().lower()
+        if any(kw.lower() in col_clean for kw in keywords):
+            return col
+    return None
+
+
 @st.cache_data
-def load_and_prepare_data():
+def load_all_data():
     try:
-        df_hv = pd.read_excel(FILE_HV)
-        df_dt_chung = pd.read_excel(FILE_DE_TAI_CHUNG)
-        df_dt_luat = pd.read_excel(FILE_DE_TAI_LUAT)
-
-        # Đọc 2 sheet từ file GV và ghép theo Họ và tên
-        xls_gv = pd.ExcelFile(FILE_GV)
-        # Tự động lấy tên sheet đầu tiên và sheet chứa chữ email
-        sheet_gv = xls_gv.sheet_names[0]
-        sheet_email = [s for s in xls_gv.sheet_names if "email" in s.lower()][0]
-
-        df_gv_info = pd.read_excel(FILE_GV, sheet_name=sheet_gv)
-        df_gv_email = pd.read_excel(FILE_GV, sheet_name=sheet_email)
-
-        # Merge thông tin GV và Email
-        df_gv_full = pd.merge(
-            df_gv_info,
-            df_gv_email[["Họ và tên", "Email"]],
-            on="Họ và tên",
-            how="left",
+        # 1. Đọc file Học viên (tự tìm dòng tiêu đề chứa chữ 'mã' hoặc 'học viên')
+        df_hv = doc_excel_thong_minh(
+            FILE_HV, ["mã", "học viên", "sinh viên", "họ và tên", "họ tên"]
         )
-        return df_hv, df_dt_chung, df_dt_luat, df_gv_full
+
+        # 2. Đọc file Đề tài chung
+        df_dt_chung = doc_excel_thong_minh(
+            FILE_DE_TAI_CHUNG, ["đề tài", "tên đề tài", "bộ môn"]
+        )
+
+        # 3. Đọc file Đề tài Luật
+        df_dt_luat = doc_excel_thong_minh(
+            FILE_DE_TAI_LUAT, ["đề tài", "tên đề tài", "bộ môn"]
+        )
+
+        # 4. Đọc file Giảng viên & Email
+        xls_gv = pd.ExcelFile(FILE_GV)
+        sheet_email = [
+            s
+            for s in xls_gv.sheet_names
+            if "email" in s.lower() or "mail" in s.lower()
+        ]
+
+        if sheet_email:
+            sheet_em = sheet_email[0]
+            sheet_info = [s for s in xls_gv.sheet_names if s != sheet_em][0]
+            df_info = doc_excel_thong_minh(
+                xls_gv, ["họ", "tên", "giảng viên", "bộ môn"]
+            )
+            df_email = pd.read_excel(xls_gv, sheet_name=sheet_em)
+
+            c_ten1 = tim_cot(df_info, ["họ và tên", "họ tên", "tên"])
+            c_bm = tim_cot(df_info, ["bộ môn", "khoa"])
+            c_ten2 = tim_cot(df_email, ["họ và tên", "họ tên", "tên"])
+            c_mail = tim_cot(df_email, ["email", "mail"])
+
+            df_info = df_info.rename(
+                columns={c_ten1: "Họ và tên", c_bm: "Bộ môn"}
+            )
+            df_email = df_email.rename(
+                columns={c_ten2: "Họ và tên", c_mail: "Email"}
+            )
+            df_info["Họ và tên"] = df_info["Họ và tên"].astype(str).str.strip()
+            df_email["Họ và tên"] = (
+                df_email["Họ và tên"].astype(str).str.strip()
+            )
+            df_gv = pd.merge(
+                df_info[["Họ và tên", "Bộ môn"]],
+                df_email[["Họ và tên", "Email"]],
+                on="Họ và tên",
+                how="left",
+            )
+        else:
+            df_gv = doc_excel_thong_minh(
+                FILE_GV, ["họ", "tên", "giảng viên", "email"]
+            )
+            c_ten = tim_cot(df_gv, ["họ và tên", "họ tên", "tên"])
+            c_bm = tim_cot(df_gv, ["bộ môn", "khoa"])
+            c_mail = tim_cot(df_gv, ["email", "mail"])
+            df_gv = df_gv.rename(
+                columns={c_ten: "Họ và tên", c_bm: "Bộ môn", c_mail: "Email"}
+            )
+
+        # Đổi tên chuẩn cho bảng Đề tài
+        c_dt_chung = tim_cot(df_dt_chung, ["tên đề tài", "đề tài"])
+        c_ng_chung = tim_cot(df_dt_chung, ["ngành"])
+        c_bm_chung = tim_cot(df_dt_chung, ["bộ môn", "khoa"])
+        df_dt_chung = df_dt_chung.rename(
+            columns={
+                c_dt_chung: "Tên đề tài",
+                c_ng_chung: "Ngành",
+                c_bm_chung: "Bộ môn",
+            }
+        )
+
+        c_dt_luat = tim_cot(df_dt_luat, ["tên đề tài", "đề tài"])
+        c_bm_luat = tim_cot(df_dt_luat, ["bộ môn", "khoa"])
+        df_dt_luat = df_dt_luat.rename(
+            columns={c_dt_luat: "Tên đề tài", c_bm_luat: "Bộ môn"}
+        )
+
+        return df_hv, df_dt_chung, df_dt_luat, df_gv
     except Exception as e:
-        st.error(f"Lỗi khi đọc file dữ liệu: {e}")
+        st.error(f"Lỗi đọc file: {e}")
         return None, None, None, None
 
 
-df_hv, df_dt_chung, df_dt_luat, df_gv = load_and_prepare_data()
+df_hv, df_dt_chung, df_dt_luat, df_gv = load_all_data()
 
-# Khởi tạo file kết quả nếu chưa có
+# File kết quả
 if not os.path.exists(FILE_KET_QUA):
-    if os.path.exists(FILE_MAU_DK):
-        df_init = pd.read_excel(FILE_MAU_DK)
-    else:
-        df_init = pd.DataFrame(
-            columns=[
-                "Mã học viên",
-                "Họ và tên",
-                "Ngành",
-                "Chuyên ngành",
-                "Tên đề tài",
-                "Bộ môn",
-                "GVHD 1",
-                "Email GVHD",
-                "Thời gian đăng ký",
-            ]
-        )
-    df_init.to_excel(FILE_KET_QUA, index=False)
+    pd.DataFrame(
+        columns=[
+            "Mã học viên",
+            "Họ và tên",
+            "Ngành",
+            "Chuyên ngành",
+            "Tên đề tài",
+            "Bộ môn",
+            "GVHD 1",
+            "Email GVHD",
+            "Thời gian đăng ký",
+        ]
+    ).to_excel(FILE_KET_QUA, index=False)
 
-# GIAO DIỆN CHÍNH
 st.title("🎓 HỆ THỐNG ĐĂNG KÝ ĐỀ TÀI & GVHD")
 st.markdown("---")
 
 if df_hv is not None and df_gv is not None:
-    # 1. Tra cứu học viên
     st.subheader("1. Tra cứu thông tin học viên")
-    ma_hv = st.text_input(
-        "Nhập Mã Học Viên (Ví dụ: HV001, HV002, HV003):"
-    ).strip()
+    ma_hv_nhap = st.text_input("Nhập Mã Học Viên (Ví dụ: 252010006):").strip()
 
-    if ma_hv:
-        hv_row = df_hv[
-            df_hv["Mã học viên"].astype(str).str.lower() == ma_hv.lower()
-        ]
+    if ma_hv_nhap:
+        # TÌM KIẾM HỌC VIÊN TRÊN TOÀN BỘ CÁC CỘT (Không bao giờ lo sai tên cột)
+        dong_tim_thay = None
+        for idx, row in df_hv.iterrows():
+            row_str = " ".join([str(val).strip() for val in row.values])
+            if ma_hv_nhap.lower() in row_str.lower():
+                dong_tim_thay = row
+                break
 
-        if hv_row.empty:
-            st.error("❌ Không tìm thấy mã học viên trong hệ thống!")
+        if dong_tim_thay is None:
+            st.error(
+                f"❌ Không tìm thấy mã học viên '{ma_hv_nhap}' trong danh sách!"
+            )
         else:
-            hv = hv_row.iloc[0]
-            ten_hv = hv["Họ và tên"]
-            nganh = str(hv["Ngành"]).strip()
+            # Nhận diện thông tin học viên từ dòng tìm được
+            cot_ten = tim_cot(df_hv, ["họ và tên", "họ tên", "tên"])
+            cot_nganh = tim_cot(df_hv, ["ngành"])
+            cot_chuyennganh = tim_cot(
+                df_hv, ["chuyên ngành", "chuyen nganh", "chuyên sâu"]
+            )
+
+            ten_hv = (
+                str(dong_tim_thay[cot_ten])
+                if cot_ten
+                else "Học viên " + ma_hv_nhap
+            )
+            nganh = str(dong_tim_thay[cot_nganh]) if cot_nganh else "Luật"
             chuyen_nganh = (
-                str(hv["Chuyên ngành"]).strip()
-                if pd.notna(hv["Chuyên ngành"])
+                str(dong_tim_thay[cot_chuyennganh])
+                if cot_chuyennganh and pd.notna(dong_tim_thay[cot_chuyennganh])
                 else ""
             )
 
             st.success(f"Học viên: **{ten_hv}**")
-            col1, col2 = st.columns(2)
-            col1.info(f"**Ngành:** {nganh}")
-            col2.info(f"**Chuyên ngành:** {chuyen_nganh}")
+            c1, c2 = st.columns(2)
+            c1.info(f"**Ngành:** {nganh}")
+            c2.info(f"**Chuyên ngành:** {chuyen_nganh if chuyen_nganh else 'Không có'}")
 
             st.markdown("---")
             st.subheader("2. Lựa chọn Đề tài và Giảng viên hướng dẫn")
 
-            # XỬ LÝ QUY TẮC NGHIỆP VỤ:
+            # Xử lý quy tắc nghiệp vụ
             is_luat_bdkh = (
                 "luật kinh tế" in nganh.lower()
                 and "biến đổi khí hậu" in chuyen_nganh.lower()
             )
             is_luat_chung = "luật" in nganh.lower() and not is_luat_bdkh
 
-            # A. Lọc danh sách đề tài
             if is_luat_bdkh:
                 st.caption(
-                    "💡 *Quyền ưu tiên đặc thù:* Học viên được chọn đề tài và GVHD ở tất cả các bộ môn."
+                    "💡 *Ưu tiên đặc thù:* Bạn được chọn đề tài và GVHD ở tất cả các bộ môn."
                 )
-                df_de_tai_chon = pd.concat(
+                df_dt_chon = pd.concat(
                     [df_dt_chung, df_dt_luat], ignore_index=True
                 )
             elif is_luat_chung:
                 st.caption(
-                    "💡 *Ngành Luật:* Bạn có thể chọn đề tài ở tất cả các bộ môn trong danh mục đề tài Luật."
+                    "💡 *Ngành Luật:* Bạn có thể chọn đề tài ở tất cả bộ môn trong danh mục Luật."
                 )
-                df_de_tai_chon = df_dt_luat
+                df_dt_chon = df_dt_luat
             else:
-                # Ngành riêng biệt: Chỉ lọc đề tài thuộc ngành của học viên
-                df_de_tai_chon = df_dt_chung[
-                    df_dt_chung["Ngành"].str.strip().str.lower()
+                df_dt_chon = df_dt_chung[
+                    df_dt_chung["Ngành"].astype(str).str.strip().str.lower()
                     == nganh.lower()
                 ]
 
-            if df_de_tai_chon.empty:
-                st.warning("Hiện tại chưa có đề tài mở phù hợp với ngành này.")
+            if df_dt_chon.empty:
+                st.warning("Hiện tại chưa có đề tài mở phù hợp với ngành.")
             else:
-                # Chọn đề tài
-                list_ten_de_tai = df_de_tai_chon["Tên đề tài"].tolist()
-                ten_de_tai = st.selectbox("Chọn Tên đề tài:", list_ten_de_tai)
+                list_dt = df_dt_chon["Tên đề tài"].dropna().unique().tolist()
+                ten_dt = st.selectbox("Chọn Tên đề tài:", list_dt)
 
-                # Lấy bộ môn của đề tài đã chọn
-                info_dt = df_de_tai_chon[
-                    df_de_tai_chon["Tên đề tài"] == ten_de_tai
-                ].iloc[0]
-                bo_mon_de_tai = str(info_dt["Bộ môn"]).strip()
-                st.write(f"📌 *Đề tài thuộc Bộ môn:* **{bo_mon_de_tai}**")
+                info_dt = df_dt_chon[df_dt_chon["Tên đề tài"] == ten_dt].iloc[0]
+                bo_mon_dt = str(info_dt.get("Bộ môn", "")).strip()
+                st.write(f"📌 *Đề tài thuộc Bộ môn:* **{bo_mon_dt}**")
 
-                # B. Lọc danh sách Giảng viên hướng dẫn
+                # Lọc GVHD
                 if is_luat_bdkh:
-                    # Được chọn GVHD của bộ môn khác
                     df_gv_chon = df_gv
                 else:
-                    # Chỉ chọn GVHD của bộ môn có đề tài
                     df_gv_chon = df_gv[
-                        df_gv["Bộ môn"].str.strip().str.lower()
-                        == bo_mon_de_tai.lower()
+                        df_gv["Bộ môn"].astype(str).str.strip().str.lower()
+                        == bo_mon_dt.lower()
                     ]
 
                 if df_gv_chon.empty:
-                    st.error(
-                        f"Bộ môn '{bo_mon_de_tai}' hiện chưa có GVHD trong danh sách!"
-                    )
+                    st.error(f"Bộ môn '{bo_mon_dt}' hiện chưa có GVHD.")
                 else:
-                    list_ten_gv = df_gv_chon["Họ và tên"].tolist()
-                    gv_huong_dan = st.selectbox(
-                        "Chọn Giảng viên hướng dẫn 1:", list_ten_gv
+                    list_gv = df_gv_chon["Họ và tên"].dropna().unique().tolist()
+                    gv_chon = st.selectbox(
+                        "Chọn Giảng viên hướng dẫn 1:", list_gv
                     )
 
-                    # Lấy email của GV đã chọn
                     gv_info = df_gv_chon[
-                        df_gv_chon["Họ và tên"] == gv_huong_dan
+                        df_gv_chon["Họ và tên"] == gv_chon
                     ].iloc[0]
-                    email_gv = (
-                        gv_info["Email"] if pd.notna(gv_info["Email"]) else ""
+                    email_gv = str(gv_info.get("Email", ""))
+                    st.write(
+                        f"✉️ *Email GVHD:* `{email_gv if email_gv != 'nan' else 'Chưa có email'}`"
                     )
-                    st.write(f"✉️ *Email GVHD:* `{email_gv}`")
 
-                    # 3. Ghi dữ liệu kết quả
                     st.markdown("---")
                     if st.button("Xác Nhận Đăng Ký Đề Tài", type="primary"):
                         df_kq = pd.read_excel(FILE_KET_QUA)
-
-                        # Nếu học viên đăng ký lại -> Xóa bản ghi cũ
                         df_kq = df_kq[
-                            df_kq["Mã học viên"].astype(str)
-                            != str(hv["Mã học viên"])
+                            df_kq["Mã học viên"].astype(str) != str(ma_hv_nhap)
                         ]
 
-                        ban_ghi_moi = {
-                            "Mã học viên": hv["Mã học viên"],
+                        ban_ghi = {
+                            "Mã học viên": ma_hv_nhap,
                             "Họ và tên": ten_hv,
                             "Ngành": nganh,
                             "Chuyên ngành": chuyen_nganh,
-                            "Tên đề tài": ten_de_tai,
-                            "Bộ môn": bo_mon_de_tai,
-                            "GVHD 1": gv_huong_dan,
-                            "Email GVHD": email_gv,
+                            "Tên đề tài": ten_dt,
+                            "Bộ môn": bo_mon_dt,
+                            "GVHD 1": gv_chon,
+                            "Email GVHD": (
+                                email_gv if email_gv != "nan" else ""
+                            ),
                             "Thời gian đăng ký": datetime.now().strftime(
                                 "%d/%m/%Y %H:%M:%S"
                             ),
                         }
-
                         df_kq = pd.concat(
-                            [df_kq, pd.DataFrame([ban_ghi_moi])],
-                            ignore_index=True,
+                            [df_kq, pd.DataFrame([ban_ghi])], ignore_index=True
                         )
                         df_kq.to_excel(FILE_KET_QUA, index=False)
 
                         st.balloons()
                         st.success(
-                            f"🎉 Chúc mừng học viên **{ten_hv}** đã đăng ký thành công đề tài!"
+                            f"🎉 Chúc mừng học viên **{ten_hv}** đã đăng ký thành công!"
                         )
 
-# Dành cho Quản trị viên
+# Quản trị viên
 st.markdown("---")
-with st.expander("🛠️ Quản Trị Viên - Tải Kết Quả Đăng Ký"):
+with st.expander("🛠️ Dành cho Quản trị viên (Tải danh sách đăng ký)"):
     if os.path.exists(FILE_KET_QUA):
         with open(FILE_KET_QUA, "rb") as f:
             st.download_button(
-                label="📥 Tải file kết quả hoàn chỉnh (.xlsx)",
+                label="📥 Tải file kết quả (.xlsx)",
                 data=f,
-                file_name=f"Ket_Qua_Dang_Ky_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
+                file_name=f"Ket_Qua_{datetime.now().strftime('%d_%m_%Y')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             )
-            
